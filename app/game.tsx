@@ -10,6 +10,9 @@ import {
   SafeAreaView,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { PowerUpStore } from '@/components/PowerUpStore';
+import { AchievementToast } from '@/components/AchievementToast';
+import { ParticleEffect } from '@/components/ParticleEffect';
 
 const { width, height } = Dimensions.get('window');
 
@@ -26,6 +29,38 @@ interface Wall {
   start: [number, number];
   end: [number, number];
   isComplete: boolean;
+  isShielded?: boolean;
+}
+
+interface PowerUpState {
+  slowMotion: { active: boolean; endTime: number };
+  speedBoost: { active: boolean; endTime: number };
+  multiWall: { active: boolean; endTime: number };
+  shield: { active: boolean; endTime: number };
+}
+
+interface PowerUp {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  cost: number;
+  duration: number;
+  type: 'slowMotion' | 'speedBoost' | 'multiWall' | 'shield';
+}
+
+interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  rarity: 'common' | 'rare' | 'epic' | 'legendary';
+}
+
+interface ParticleState {
+  active: boolean;
+  position: [number, number];
+  type: 'explosion' | 'trail' | 'powerup';
 }
 
 interface GameScreenProps {
@@ -39,6 +74,22 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
   const [gems, setGems] = useState(100);
   const [areaCleared, setAreaCleared] = useState(0);
   const [targetArea, setTargetArea] = useState(75);
+  const [showPowerUpStore, setShowPowerUpStore] = useState(false);
+  const [ownedPowerUps, setOwnedPowerUps] = useState<{ [key: string]: number }>({
+    slowMotion: 2,
+    speedBoost: 1,
+    multiWall: 0,
+    shield: 1,
+  });
+  const [powerUpStates, setPowerUpStates] = useState<PowerUpState>({
+    slowMotion: { active: false, endTime: 0 },
+    speedBoost: { active: false, endTime: 0 },
+    multiWall: { active: false, endTime: 0 },
+    shield: { active: false, endTime: 0 },
+  });
+  const [currentAchievement, setCurrentAchievement] = useState<Achievement | null>(null);
+  const [particles, setParticles] = useState<ParticleState[]>([]);
+  const [unlockedAchievements, setUnlockedAchievements] = useState<string[]>([]);
   
   const [balls, setBalls] = useState<Ball[]>([
     {
@@ -65,6 +116,148 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
   const animationRef = useRef<number>();
   const lastTimeRef = useRef<number>(0);
 
+  // Achievement definitions
+  const ACHIEVEMENTS: Achievement[] = [
+    { id: 'first_wall', title: 'First Steps', description: 'Build your first wall', icon: '🧱', rarity: 'common' },
+    { id: 'level_5', title: 'Getting Started', description: 'Reach level 5', icon: '🎯', rarity: 'common' },
+    { id: 'power_user', title: 'Power User', description: 'Use 10 power-ups', icon: '⚡', rarity: 'rare' },
+    { id: 'wall_master', title: 'Wall Master', description: 'Build 100 walls', icon: '🏗️', rarity: 'rare' },
+    { id: 'gem_collector', title: 'Gem Collector', description: 'Collect 1000 gems', icon: '💎', rarity: 'epic' },
+    { id: 'perfectionist', title: 'Perfectionist', description: 'Clear 100% of an arena', icon: '✨', rarity: 'legendary' },
+  ];
+
+  // Achievement checking
+  const checkAchievements = (newScore: number, newLevel: number, wallsBuilt: number, gemsTotal: number) => {
+    const toCheck = [
+      { id: 'first_wall', condition: wallsBuilt >= 1 },
+      { id: 'level_5', condition: newLevel >= 5 },
+      { id: 'wall_master', condition: wallsBuilt >= 100 },
+      { id: 'gem_collector', condition: gemsTotal >= 1000 },
+      { id: 'perfectionist', condition: areaCleared >= 100 },
+    ];
+
+    toCheck.forEach(({ id, condition }) => {
+      if (condition && !unlockedAchievements.includes(id)) {
+        const achievement = ACHIEVEMENTS.find(a => a.id === id);
+        if (achievement) {
+          setUnlockedAchievements(prev => [...prev, id]);
+          setCurrentAchievement(achievement);
+          
+          // Add particle effect
+          setParticles(prev => [...prev, {
+            active: true,
+            position: [width / 2, height / 2],
+            type: 'powerup'
+          }]);
+          
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        }
+      }
+    });
+  };
+
+  // Add particle effect helper
+  const addParticleEffect = (position: [number, number], type: 'explosion' | 'trail' | 'powerup') => {
+    setParticles(prev => [...prev, { active: true, position, type }]);
+    
+    // Remove particle after animation
+    setTimeout(() => {
+      setParticles(prev => prev.slice(1));
+    }, 2000);
+  };
+
+  // Power-up functions
+  const usePowerUp = (type: 'slowMotion' | 'speedBoost' | 'multiWall' | 'shield') => {
+    if (ownedPowerUps[type] > 0) {
+      const currentTime = Date.now();
+      const duration = type === 'slowMotion' ? 10000 : 
+                      type === 'speedBoost' ? 15000 : 
+                      type === 'multiWall' ? 20000 : 25000;
+      
+      setPowerUpStates(prev => ({
+        ...prev,
+        [type]: { active: true, endTime: currentTime + duration }
+      }));
+      
+      setOwnedPowerUps(prev => ({
+        ...prev,
+        [type]: prev[type] - 1
+      }));
+      
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    }
+  };
+
+  const handlePowerUpPurchase = (powerUp: PowerUp) => {
+    if (gems >= powerUp.cost) {
+      setGems(prev => prev - powerUp.cost);
+      setOwnedPowerUps(prev => ({
+        ...prev,
+        [powerUp.type]: (prev[powerUp.type] || 0) + 1
+      }));
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+  };
+
+  // Check for expired power-ups
+  useEffect(() => {
+    const checkPowerUps = () => {
+      const currentTime = Date.now();
+      setPowerUpStates(prev => {
+        const newState = { ...prev };
+        Object.keys(newState).forEach(key => {
+          const powerUp = newState[key as keyof PowerUpState];
+          if (powerUp.active && currentTime > powerUp.endTime) {
+            powerUp.active = false;
+            powerUp.endTime = 0;
+          }
+        });
+        return newState;
+      });
+    };
+
+    const interval = setInterval(checkPowerUps, 100);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Wall collision detection
+  const checkWallCollision = (ballPos: [number, number], ballRadius: number, walls: Wall[]) => {
+    for (const wall of walls) {
+      const { start, end } = wall;
+      const wallLength = Math.sqrt(
+        Math.pow(end[0] - start[0], 2) + Math.pow(end[1] - start[1], 2)
+      );
+      
+      // Vector from start to end of wall
+      const wallVec = [(end[0] - start[0]) / wallLength, (end[1] - start[1]) / wallLength];
+      
+      // Vector from start of wall to ball
+      const ballVec = [ballPos[0] - start[0], ballPos[1] - start[1]];
+      
+      // Project ball position onto wall
+      const projection = ballVec[0] * wallVec[0] + ballVec[1] * wallVec[1];
+      
+      if (projection >= 0 && projection <= wallLength) {
+        // Find closest point on wall to ball
+        const closestPoint = [
+          start[0] + projection * wallVec[0],
+          start[1] + projection * wallVec[1]
+        ];
+        
+        // Check distance from ball to closest point
+        const distance = Math.sqrt(
+          Math.pow(ballPos[0] - closestPoint[0], 2) + 
+          Math.pow(ballPos[1] - closestPoint[1], 2)
+        );
+        
+        if (distance <= ballRadius + 2) { // 2 is half wall thickness
+          return { collision: true, wall, closestPoint };
+        }
+      }
+    }
+    return { collision: false };
+  };
+
   // Game physics loop
   useEffect(() => {
     const animate = (currentTime: number) => {
@@ -77,9 +270,39 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
             let newPosition = [...ball.position] as [number, number];
             let newVelocity = [...ball.velocity] as [number, number];
 
-            // Apply velocity
-            newPosition[0] += newVelocity[0];
-            newPosition[1] += newVelocity[1];
+            // Apply slow motion effect
+            const speedMultiplier = powerUpStates.slowMotion.active ? 0.3 : 1.0;
+            
+            // Apply velocity with speed modifier
+            newPosition[0] += newVelocity[0] * speedMultiplier;
+            newPosition[1] += newVelocity[1] * speedMultiplier;
+
+            // Check wall collisions
+            const wallCollision = checkWallCollision(newPosition, ball.radius, walls);
+            if (wallCollision.collision && wallCollision.wall) {
+              // Reflect velocity based on wall normal
+              const wall = wallCollision.wall;
+              const wallVec = [
+                wall.end[0] - wall.start[0],
+                wall.end[1] - wall.start[1]
+              ];
+              const wallLength = Math.sqrt(wallVec[0] * wallVec[0] + wallVec[1] * wallVec[1]);
+              const wallNormal = [-wallVec[1] / wallLength, wallVec[0] / wallLength];
+              
+              // Reflect velocity
+              const dotProduct = newVelocity[0] * wallNormal[0] + newVelocity[1] * wallNormal[1];
+              newVelocity[0] -= 2 * dotProduct * wallNormal[0];
+              newVelocity[1] -= 2 * dotProduct * wallNormal[1];
+              
+              // Move ball away from wall
+              newPosition[0] = ball.position[0];
+              newPosition[1] = ball.position[1];
+              
+              // Destroy wall if not shielded
+              if (!wall.isShielded && !powerUpStates.shield.active) {
+                setWalls(prevWalls => prevWalls.filter(w => w.id !== wall.id));
+              }
+            }
 
             // Bounce off screen boundaries
             if (newPosition[0] + ball.radius > width || newPosition[0] - ball.radius < 0) {
@@ -110,7 +333,7 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [gameState]);
+  }, [gameState, walls, powerUpStates]);
 
   const handleTouchStart = (event: any) => {
     if (gameState !== 'playing') return;
@@ -147,16 +370,54 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
     );
     
     if (distance > 20) { // Minimum wall length
-      const newWall: Wall = {
+      const baseWall: Wall = {
         id: `wall_${Date.now()}`,
         start: buildStart,
         end: [touchX, touchY],
         isComplete: true,
+        isShielded: powerUpStates.shield.active,
       };
       
-      setWalls(prev => [...prev, newWall]);
-      setScore(prev => prev + 10);
-      setAreaCleared(prev => Math.min(100, prev + 3));
+      const newWalls = [baseWall];
+      
+      // Multi-wall power-up: create additional parallel walls
+      if (powerUpStates.multiWall.active) {
+        const wallVec = [touchX - buildStart[0], touchY - buildStart[1]];
+        const wallLength = Math.sqrt(wallVec[0] * wallVec[0] + wallVec[1] * wallVec[1]);
+        const wallNormal = [-wallVec[1] / wallLength, wallVec[0] / wallLength];
+        
+        // Add parallel walls
+        for (let i = 1; i <= 2; i++) {
+          const offset = i * 30; // 30 pixels apart
+          newWalls.push({
+            id: `wall_${Date.now()}_${i}`,
+            start: [
+              buildStart[0] + wallNormal[0] * offset,
+              buildStart[1] + wallNormal[1] * offset
+            ],
+            end: [
+              touchX + wallNormal[0] * offset,
+              touchY + wallNormal[1] * offset
+            ],
+            isComplete: true,
+            isShielded: powerUpStates.shield.active,
+          });
+        }
+      }
+      
+      setWalls(prev => {
+        const updatedWalls = [...prev, ...newWalls];
+        
+        // Add particle effect for wall building
+        addParticleEffect([touchX, touchY], 'explosion');
+        
+        // Check achievements
+        checkAchievements(score + (10 * newWalls.length), level, updatedWalls.length, gems);
+        
+        return updatedWalls;
+      });
+      setScore(prev => prev + (10 * newWalls.length));
+      setAreaCleared(prev => Math.min(100, prev + (3 * newWalls.length)));
     }
     
     setIsBuilding(false);
@@ -265,6 +526,7 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
               key={wall.id}
               style={[
                 styles.wall,
+                wall.isShielded && styles.shieldedWall,
                 {
                   left: wall.start[0],
                   top: wall.start[1] - 2,
@@ -302,17 +564,63 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
       
       {/* Power-up buttons */}
       <View style={styles.powerUpBar}>
-        <TouchableOpacity style={styles.powerUpButton}>
+        <TouchableOpacity 
+          style={[
+            styles.powerUpButton,
+            powerUpStates.slowMotion.active && styles.powerUpButtonActive,
+            ownedPowerUps.slowMotion === 0 && styles.powerUpButtonDisabled,
+          ]}
+          onPress={() => usePowerUp('slowMotion')}
+          disabled={ownedPowerUps.slowMotion === 0 || powerUpStates.slowMotion.active}
+        >
           <Text style={styles.powerUpText}>⏰ Slow</Text>
+          <Text style={styles.powerUpCount}>{ownedPowerUps.slowMotion}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.powerUpButton}>
+        
+        <TouchableOpacity 
+          style={[
+            styles.powerUpButton,
+            powerUpStates.speedBoost.active && styles.powerUpButtonActive,
+            ownedPowerUps.speedBoost === 0 && styles.powerUpButtonDisabled,
+          ]}
+          onPress={() => usePowerUp('speedBoost')}
+          disabled={ownedPowerUps.speedBoost === 0 || powerUpStates.speedBoost.active}
+        >
           <Text style={styles.powerUpText}>⚡ Speed</Text>
+          <Text style={styles.powerUpCount}>{ownedPowerUps.speedBoost}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.powerUpButton}>
+        
+        <TouchableOpacity 
+          style={[
+            styles.powerUpButton,
+            powerUpStates.multiWall.active && styles.powerUpButtonActive,
+            ownedPowerUps.multiWall === 0 && styles.powerUpButtonDisabled,
+          ]}
+          onPress={() => usePowerUp('multiWall')}
+          disabled={ownedPowerUps.multiWall === 0 || powerUpStates.multiWall.active}
+        >
           <Text style={styles.powerUpText}>🧱 Multi</Text>
+          <Text style={styles.powerUpCount}>{ownedPowerUps.multiWall}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.powerUpButton}>
+        
+        <TouchableOpacity 
+          style={[
+            styles.powerUpButton,
+            powerUpStates.shield.active && styles.powerUpButtonActive,
+            ownedPowerUps.shield === 0 && styles.powerUpButtonDisabled,
+          ]}
+          onPress={() => usePowerUp('shield')}
+          disabled={ownedPowerUps.shield === 0 || powerUpStates.shield.active}
+        >
           <Text style={styles.powerUpText}>🛡️ Shield</Text>
+          <Text style={styles.powerUpCount}>{ownedPowerUps.shield}</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={styles.storeButton}
+          onPress={() => setShowPowerUpStore(true)}
+        >
+          <Text style={styles.storeButtonText}>🏪</Text>
         </TouchableOpacity>
       </View>
       
@@ -324,6 +632,29 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
           </TouchableOpacity>
         </View>
       )}
+      
+      {/* Particle Effects */}
+      {particles.map((particle, index) => (
+        <ParticleEffect
+          key={index}
+          active={particle.active}
+          position={particle.position}
+          type={particle.type}
+        />
+      ))}
+      
+      <PowerUpStore
+        visible={showPowerUpStore}
+        onClose={() => setShowPowerUpStore(false)}
+        gems={gems}
+        onPurchase={handlePowerUpPurchase}
+        ownedPowerUps={ownedPowerUps}
+      />
+      
+      <AchievementToast
+        achievement={currentAchievement}
+        onComplete={() => setCurrentAchievement(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -438,12 +769,50 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 6,
     alignItems: 'center',
-    minWidth: 60,
+    minWidth: 50,
+    position: 'relative',
+  },
+  powerUpButtonActive: {
+    backgroundColor: '#F59E0B',
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  powerUpButtonDisabled: {
+    backgroundColor: '#475569',
+    opacity: 0.5,
   },
   powerUpText: {
     color: 'white',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '600',
+  },
+  powerUpCount: {
+    color: 'white',
+    fontSize: 8,
+    fontWeight: 'bold',
+    marginTop: 2,
+  },
+  storeButton: {
+    backgroundColor: '#F59E0B',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+    alignItems: 'center',
+    minWidth: 40,
+  },
+  storeButtonText: {
+    fontSize: 16,
+  },
+  shieldedWall: {
+    backgroundColor: '#F59E0B',
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 6,
+    elevation: 6,
   },
   levelComplete: {
     position: 'absolute',
