@@ -74,6 +74,7 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
   const [gems, setGems] = useState(100);
   const [areaCleared, setAreaCleared] = useState(0);
   const [targetArea, setTargetArea] = useState(75);
+  const [clearedAreas, setClearedAreas] = useState<{x: number, y: number, width: number, height: number}[]>([]);
   const [showPowerUpStore, setShowPowerUpStore] = useState(false);
   const [ownedPowerUps, setOwnedPowerUps] = useState<{ [key: string]: number }>({
     slowMotion: 2,
@@ -164,6 +165,50 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
     setTimeout(() => {
       setParticles(prev => prev.slice(1));
     }, 2000);
+  };
+
+  // Calculate cleared areas based on walls and ball positions
+  const calculateClearedAreas = (currentWalls: Wall[], currentBalls: Ball[]) => {
+    // Simple area calculation - create rectangles around walls that don't contain balls
+    const newClearedAreas: {x: number, y: number, width: number, height: number}[] = [];
+    
+    // For each wall, check if it creates a safe zone (no balls nearby)
+    currentWalls.forEach(wall => {
+      const wallLength = Math.sqrt(
+        Math.pow(wall.end[0] - wall.start[0], 2) + Math.pow(wall.end[1] - wall.start[1], 2)
+      );
+      
+      // Create a rectangular area around the wall
+      const centerX = (wall.start[0] + wall.end[0]) / 2;
+      const centerY = (wall.start[1] + wall.end[1]) / 2;
+      const areaSize = Math.min(wallLength / 2, 50); // Limit area size
+      
+      // Check if any balls are in this area
+      const hasBalls = currentBalls.some(ball => {
+        const distance = Math.sqrt(
+          Math.pow(ball.position[0] - centerX, 2) + Math.pow(ball.position[1] - centerY, 2)
+        );
+        return distance < areaSize + ball.radius;
+      });
+      
+      if (!hasBalls && wallLength > 30) { // Only count significant walls
+        newClearedAreas.push({
+          x: centerX - areaSize,
+          y: centerY - areaSize,
+          width: areaSize * 2,
+          height: areaSize * 2,
+        });
+      }
+    });
+    
+    setClearedAreas(newClearedAreas);
+    
+    // Calculate total cleared percentage
+    const totalGameArea = (width - 20) * (height * 0.6); // Game area size
+    const clearedArea = newClearedAreas.reduce((total, area) => total + (area.width * area.height), 0);
+    const clearedPercentage = Math.min(100, (clearedArea / totalGameArea) * 100);
+    
+    return clearedPercentage;
   };
 
   // Power-up functions
@@ -265,8 +310,8 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
       lastTimeRef.current = currentTime;
 
       if (gameState === 'playing') {
-        setBalls(prevBalls => 
-          prevBalls.map(ball => {
+        setBalls(prevBalls => {
+          const newBalls = prevBalls.map(ball => {
             let newPosition = [...ball.position] as [number, number];
             let newVelocity = [...ball.velocity] as [number, number];
 
@@ -304,15 +349,21 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
               }
             }
 
-            // Bounce off screen boundaries
-            if (newPosition[0] + ball.radius > width || newPosition[0] - ball.radius < 0) {
+            // Define game area boundaries (with padding for UI)
+            const gameAreaLeft = 10;
+            const gameAreaRight = width - 10;
+            const gameAreaTop = 10;
+            const gameAreaBottom = height * 0.8 - 10; // Leave space for power-up bar
+            
+            // Bounce off game area boundaries
+            if (newPosition[0] + ball.radius > gameAreaRight || newPosition[0] - ball.radius < gameAreaLeft) {
               newVelocity[0] *= -1;
-              newPosition[0] = Math.max(ball.radius, Math.min(width - ball.radius, newPosition[0]));
+              newPosition[0] = Math.max(gameAreaLeft + ball.radius, Math.min(gameAreaRight - ball.radius, newPosition[0]));
             }
             
-            if (newPosition[1] + ball.radius > height * 0.8 || newPosition[1] - ball.radius < height * 0.2) {
+            if (newPosition[1] + ball.radius > gameAreaBottom || newPosition[1] - ball.radius < gameAreaTop) {
               newVelocity[1] *= -1;
-              newPosition[1] = Math.max(height * 0.2 + ball.radius, Math.min(height * 0.8 - ball.radius, newPosition[1]));
+              newPosition[1] = Math.max(gameAreaTop + ball.radius, Math.min(gameAreaBottom - ball.radius, newPosition[1]));
             }
 
             return {
@@ -320,8 +371,16 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
               position: newPosition,
               velocity: newVelocity,
             };
-          })
-        );
+          });
+          
+          // Recalculate cleared areas with new ball positions
+          setTimeout(() => {
+            const newClearedPercentage = calculateClearedAreas(walls, newBalls);
+            setAreaCleared(newClearedPercentage);
+          }, 0);
+          
+          return newBalls;
+        });
       }
 
       animationRef.current = requestAnimationFrame(animate);
@@ -411,13 +470,16 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
         // Add particle effect for wall building
         addParticleEffect([touchX, touchY], 'explosion');
         
+        // Recalculate cleared areas
+        const newClearedPercentage = calculateClearedAreas(updatedWalls, balls);
+        setAreaCleared(newClearedPercentage);
+        
         // Check achievements
         checkAchievements(score + (10 * newWalls.length), level, updatedWalls.length, gems);
         
         return updatedWalls;
       });
       setScore(prev => prev + (10 * newWalls.length));
-      setAreaCleared(prev => Math.min(100, prev + (3 * newWalls.length)));
     }
     
     setIsBuilding(false);
@@ -429,6 +491,7 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
     if (areaCleared >= targetArea) {
       setLevel(prev => prev + 1);
       setAreaCleared(0);
+      setClearedAreas([]);
       setTargetArea(Math.min(90, targetArea + 5));
       setGems(prev => prev + 50);
       setWalls([]);
@@ -492,6 +555,25 @@ export default function GameScreen({ onBackToMenu }: GameScreenProps) {
       
       {/* Game Area */}
       <View style={styles.gameArea} {...panResponder.panHandlers}>
+        {/* Game Area Boundaries */}
+        <View style={styles.gameAreaBoundary} />
+        
+        {/* Cleared Areas */}
+        {clearedAreas.map((area, index) => (
+          <View
+            key={`cleared-${index}`}
+            style={[
+              styles.clearedArea,
+              {
+                left: area.x,
+                top: area.y,
+                width: area.width,
+                height: area.height,
+              },
+            ]}
+          />
+        ))}
+        
         {/* Balls */}
         {balls.map(ball => (
           <View
@@ -730,6 +812,25 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#1E293B',
     position: 'relative',
+  },
+  gameAreaBoundary: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    right: 10,
+    bottom: 10,
+    borderWidth: 2,
+    borderColor: '#475569',
+    borderStyle: 'dashed',
+    borderRadius: 8,
+    opacity: 0.5,
+  },
+  clearedArea: {
+    position: 'absolute',
+    backgroundColor: 'rgba(16, 185, 129, 0.2)', // Green with transparency
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    borderRadius: 4,
   },
   ball: {
     position: 'absolute',
